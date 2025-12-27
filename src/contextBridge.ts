@@ -412,29 +412,27 @@ export class ContextBridge {
     }
 
     /**
-     * Get project description from README or infer from filesystem
-     */
+    * Get project description from README or infer from filesystem
+    */
     private getProjectDescription(
         keyFiles: Array<{ name: string; relativePath: string; preview?: string }>,
         rootPath: string
     ): { text: string; isInferred: boolean } | null {
         // Try to extract from README first
-        const readmeFile = keyFiles.find(file => 
+        const readmeFile = keyFiles.find(file =>
             file.name === 'README.md' || file.name === 'README.txt'
         );
 
         if (readmeFile && readmeFile.preview) {
-            // Extract first non-empty line from README
             const lines = readmeFile.preview.split('\n');
             for (const line of lines) {
                 const trimmed = line.trim();
-                // Skip markdown headers, empty lines, and common boilerplate
-                if (trimmed && 
-                    !trimmed.startsWith('#') && 
-                    !trimmed.startsWith('##') &&
-                    trimmed !== 'Getting Started' &&
-                    trimmed !== 'Installation' &&
-                    trimmed.length > 10) {
+                if (
+                    trimmed &&
+                    !trimmed.startsWith('#') &&
+                    trimmed.length > 10 &&
+                    !this.isBoilerplateDescription(trimmed)
+                ) {
                     return { text: trimmed, isInferred: false };
                 }
             }
@@ -448,6 +446,27 @@ export class ContextBridge {
 
         return null;
     }
+
+
+    /**
+ * Detect low-signal / boilerplate README descriptions
+ */
+    private isBoilerplateDescription(text: string): boolean {
+        const boilerplatePatterns = [
+            'this template provides',
+            'react + vite',
+            'minimal setup',
+            'starter template',
+            'boilerplate',
+            'getting started',
+            'create-react-app',
+            'vite + react'
+        ];
+
+        const lower = text.toLowerCase();
+        return boilerplatePatterns.some(pattern => lower.includes(pattern));
+    }
+
 
     /**
      * Infer project description from filesystem structure
