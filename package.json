@@ -2,56 +2,56 @@
     "name": "contextbridge",
     "displayName": "ContextBridge",
     "description": "Deterministic context synchronization between IDE and browser-based LLMs",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "icon": "assets/icon.png",
     "engines": {
-      "vscode": "^1.75.0"
+        "vscode": "^1.75.0"
     },
     "categories": [
-      "Other"
+        "Other"
     ],
     "activationEvents": [
-      "onStartupFinished"
+        "onStartupFinished"
     ],
     "main": "./out/extension.js",
     "contributes": {
-      "commands": [
-        {
-          "command": "contextbridge.syncRepo",
-          "title": "ContextBridge: Sync Repo → Chat"
-        },
-        {
-          "command": "contextbridge.deepSyncFile",
-          "title": "Deep Sync",
-          "icon": "$(link)"
-        }
-      ],
-      "menus": {
-        "editor/title": [
-          {
-            "command": "contextbridge.deepSyncFile",
-            "when": "editorTextFocus",
-            "group": "navigation@1"
-          }
+        "commands": [
+            {
+                "command": "contextbridge.syncRepo",
+                "title": "ContextBridge: Sync Repo → Chat"
+            },
+            {
+                "command": "contextbridge.deepSyncFile",
+                "title": "Deep Sync",
+                "icon": "$(link)"
+            }
         ],
-        "editor/context": [
-          {
-            "command": "contextbridge.deepSyncFile",
-            "when": "editorTextFocus",
-            "group": "navigation"
-          }
-        ]
-      }
+        "menus": {
+            "editor/title": [
+                {
+                    "command": "contextbridge.deepSyncFile",
+                    "when": "editorTextFocus",
+                    "group": "navigation@1"
+                }
+            ],
+            "editor/context": [
+                {
+                    "command": "contextbridge.deepSyncFile",
+                    "when": "editorTextFocus",
+                    "group": "navigation"
+                }
+            ]
+        }
     },
     "scripts": {
-      "vscode:prepublish": "npm run compile",
-      "compile": "tsc -p ./",
-      "watch": "tsc -watch -p ./"
+        "vscode:prepublish": "npm run compile",
+        "compile": "tsc -p ./",
+        "watch": "tsc -watch -p ./"
     },
     "devDependencies": {
-      "@types/vscode": "^1.74.0",
-      "@types/node": "16.x",
-      "typescript": "^4.9.4"
+        "@types/vscode": "^1.74.0",
+        "@types/node": "16.x",
+        "typescript": "^4.9.4"
     },
     "publisher": "vivek-hipparkar"
-  }
+}
