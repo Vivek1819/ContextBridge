@@ -44,7 +44,21 @@ export function activate(context: vscode.ExtensionContext) {
         }
     );
 
-    context.subscriptions.push(syncRepoCommand, deepSyncFileCommand);
+    // 🔹 Status Bar button for "Sync Repo"
+    const statusBarItem = vscode.window.createStatusBarItem(
+        vscode.StatusBarAlignment.Right,
+        100
+    );
+    statusBarItem.text = '$(repo) Context';
+    statusBarItem.tooltip = 'ContextBridge: Sync Repo Context';
+    statusBarItem.command = 'contextbridge.syncRepo';
+    statusBarItem.show();
+
+    context.subscriptions.push(
+        syncRepoCommand,
+        deepSyncFileCommand,
+        statusBarItem
+    );
 }
 
 export function deactivate() {}

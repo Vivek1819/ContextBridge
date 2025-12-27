@@ -10,6 +10,9 @@
     "categories": [
       "Other"
     ],
+    "activationEvents": [
+      "onStartupFinished"
+    ],
     "main": "./out/extension.js",
     "contributes": {
       "commands": [
@@ -19,9 +22,26 @@
         },
         {
           "command": "contextbridge.deepSyncFile",
-          "title": "ContextBridge: Deep Sync Current File → Chat"
+          "title": "Deep Sync",
+          "icon": "$(link)"
         }
-      ]
+      ],
+      "menus": {
+        "editor/title": [
+          {
+            "command": "contextbridge.deepSyncFile",
+            "when": "editorTextFocus",
+            "group": "navigation@1"
+          }
+        ],
+        "editor/context": [
+          {
+            "command": "contextbridge.deepSyncFile",
+            "when": "editorTextFocus",
+            "group": "navigation"
+          }
+        ]
+      }
     },
     "scripts": {
       "vscode:prepublish": "npm run compile",
