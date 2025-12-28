@@ -145,6 +145,14 @@ export class ContextBridge {
       blocks.push("");
     }
 
+    /* ───────────── Git Metadata ───────────── */
+    const gitInfo = this.getGitMetadata(rootPath);
+    if (gitInfo) {
+      blocks.push("## Git Context");
+      blocks.push(gitInfo);
+      blocks.push("");
+    }
+
     return blocks.join("\n");
   }
 
@@ -308,6 +316,16 @@ export class ContextBridge {
       const execSummary = this.getExecutionContextSummary();
       if (execSummary) {
         blocks.push(execSummary);
+        blocks.push("");
+      }
+    }
+
+    /* ───────────── Git Metadata (optional) ───────────── */
+    if (composition.include.git) {
+      const gitInfo = this.getGitMetadata(rootPath);
+      if (gitInfo) {
+        blocks.push("## Git Context");
+        blocks.push(gitInfo);
         blocks.push("");
       }
     }
@@ -665,18 +683,50 @@ export class ContextBridge {
     }
   }
 
-  private getLastTaskSummary(): string | null {
-    const task = this.workspaceState.get<{
-      label: string;
-      exitCode?: number;
-      timestamp: number;
-    }>("contextbridge.lastTask");
+  private getGitMetadata(rootPath: string): string | null {
+    try {
+      const { execSync } = require("child_process");
 
-    if (!task) return null;
+      const branch = execSync("git branch --show-current", {
+        cwd: rootPath,
+        encoding: "utf-8",
+      }).trim();
 
-    return `Task: ${task.label}\nExit Code: ${
-      task.exitCode ?? "unknown"
-    }\nTimestamp: ${new Date(task.timestamp).toISOString()}`;
+      const status = execSync("git status --porcelain", {
+        cwd: rootPath,
+        encoding: "utf-8",
+      }).trim();
+
+      const lastCommit = execSync("git log -1 --pretty=%s", {
+        cwd: rootPath,
+        encoding: "utf-8",
+      }).trim();
+
+      const changedFiles = status
+        ? status.split("\n").map((line: string) => line.slice(3))
+        : [];
+
+      const lines: string[] = [];
+
+      lines.push(`Branch: ${branch || "unknown"}`);
+
+      if (lastCommit) {
+        lines.push(`Last Commit: ${lastCommit}`);
+      }
+
+      if (changedFiles.length > 0) {
+        lines.push("Uncommitted Changes:");
+        for (const file of changedFiles.slice(0, 10)) {
+          lines.push(`- ${file}`);
+        }
+      } else {
+        lines.push("Working tree clean");
+      }
+
+      return lines.join("\n");
+    } catch {
+      return null; // not a git repo or git unavailable
+    }
   }
 
   private getExecutionContextSummary(): string | null {
@@ -694,12 +744,12 @@ export class ContextBridge {
 
     // Prefer newer source
     if (terminal && (!task || terminal.timestamp > task.timestamp)) {
-        return (
-            "## Terminal Activity\n" +
-            "Recent manual terminal execution detected.\n" +
-            "Note: Output is not directly accessible to extensions.\n" +
-            "Tip: To include detailed output, run commands as VS Code Tasks."
-        );        
+      return (
+        "## Terminal Activity\n" +
+        "Recent manual terminal execution detected.\n" +
+        "Note: Output is not directly accessible to extensions.\n" +
+        "Tip: To include detailed output, run commands as VS Code Tasks."
+      );
     }
 
     if (task) {
