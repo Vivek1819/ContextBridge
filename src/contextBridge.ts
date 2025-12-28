@@ -1,20 +1,33 @@
-import * as vscode from 'vscode';
-import * as fs from 'fs';
-import * as path from 'path';
+import * as vscode from "vscode";
+import * as fs from "fs";
+import * as path from "path";
 
 interface FileState {
-    mtime: number;
-    size: number;
+  mtime: number;
+  size: number;
 }
 
 interface SyncState {
-    lastSyncTime: number;
-    fileStates: { [filePath: string]: FileState };
+  lastSyncTime: number;
+  fileStates: { [filePath: string]: FileState };
 }
+
+type ContextComposition = {
+  intent: string | null;
+  include: {
+    repoStructure: boolean;
+    contextDelta: boolean;
+    activeFile: boolean;
+    diagnostics: boolean;
+    terminal: boolean;
+    keyFiles: boolean;
+    git: boolean;
+  };
+};
 
 /**
  * ContextBridge: Deterministic context synchronization
- * 
+ *
  * Architecture:
  * - Repo Analyzer: Reads workspace files and diagnostics
  * - Context Selector: Decides normal sync vs deep sync
@@ -22,528 +35,681 @@ interface SyncState {
  * - UX Layer: VS Code commands + clipboard (handled in extension.ts)
  */
 export class ContextBridge {
-    private stateKey = 'contextbridge.syncState';
+  private stateKey = "contextbridge.syncState";
 
-    constructor(private workspaceState: vscode.Memento) {}
+  constructor(private workspaceState: vscode.Memento) {}
 
-    /**
-     * Sync Repo → Chat
-     * First sync: project primer
-     * Subsequent syncs: incremental updates
-     */
-    async syncRepo(
-        workspaceFolder: vscode.WorkspaceFolder,
-        composition: {
-            intent: string | null;
-            include: Record<string, boolean>;
-        }
-    ): Promise<string> {
-        const savedState = this.workspaceState.get<SyncState>(this.stateKey);
-        const isFirstSync = !savedState;
+  /**
+   * Sync Repo → Chat
+   * First sync: project primer
+   * Subsequent syncs: incremental updates
+   */
+  async syncRepo(
+    workspaceFolder: vscode.WorkspaceFolder,
+    composition: ContextComposition
+  ): Promise<string> {
+    const savedState = this.workspaceState.get<SyncState>(this.stateKey);
+    const isFirstSync = !savedState;
 
-        if (isFirstSync) {
-            return this.compileProjectPrimer(workspaceFolder, composition);
-        } else {
-            return this.compileIncrementalUpdate(workspaceFolder, savedState, composition);
-        }
+    if (isFirstSync) {
+      return this.compileProjectPrimer(workspaceFolder, composition);
+    } else {
+      return this.compileIncrementalUpdate(
+        workspaceFolder,
+        savedState,
+        composition
+      );
+    }
+  }
+
+  /**
+   * Deep Sync Current File → Chat
+   * Sends full content of ONE file only
+   */
+  async deepSyncFile(document: vscode.TextDocument): Promise<string> {
+    const filePath = document.fileName;
+    const content = document.getText();
+    const diagnostics = vscode.languages.getDiagnostics(document.uri);
+
+    return this.compileDeepSync(filePath, content, diagnostics);
+  }
+
+  /**
+   * Compile project primer (first sync)
+   */
+  private async compileProjectPrimer(
+    workspaceFolder: vscode.WorkspaceFolder,
+    composition: ContextComposition
+  ): Promise<string> {
+    const rootPath = workspaceFolder.uri.fsPath;
+    const projectStructure = this.getProjectStructure(rootPath);
+    const keyFiles = this.getKeyFiles(rootPath);
+    const activeFile = this.getActiveFileInfo();
+
+    // Save initial state
+    const fileStates = await this.buildFileStates(rootPath);
+    this.workspaceState.update(this.stateKey, {
+      lastSyncTime: Date.now(),
+      fileStates,
+    } as SyncState);
+
+    const blocks: string[] = [];
+
+    blocks.push("# ContextBridge: Project Primer");
+    blocks.push(`Workspace: ${workspaceFolder.name}`);
+    blocks.push(`Sync Time: ${new Date().toISOString()}`);
+    blocks.push("");
+
+    if (composition.intent) {
+      blocks.push("## User Intent");
+      blocks.push(composition.intent);
+      blocks.push("");
     }
 
-    /**
-     * Deep Sync Current File → Chat
-     * Sends full content of ONE file only
-     */
-    async deepSyncFile(document: vscode.TextDocument): Promise<string> {
-        const filePath = document.fileName;
-        const content = document.getText();
-        const diagnostics = vscode.languages.getDiagnostics(document.uri);
-
-        return this.compileDeepSync(filePath, content, diagnostics);
-    }
-    
-
-    /**
-     * Compile project primer (first sync)
-     */
-    private async compileProjectPrimer(
-        workspaceFolder: vscode.WorkspaceFolder,
-        composition: { intent: string | null }
-    ): Promise<string> {
-        
-        const rootPath = workspaceFolder.uri.fsPath;
-        const projectStructure = this.getProjectStructure(rootPath);
-        const keyFiles = this.getKeyFiles(rootPath);
-        const activeFile = this.getActiveFileInfo();
-
-        // Save initial state
-        const fileStates = await this.buildFileStates(rootPath);
-        this.workspaceState.update(this.stateKey, {
-            lastSyncTime: Date.now(),
-            fileStates
-        } as SyncState);
-
-        const blocks: string[] = [];
-
-        blocks.push('# ContextBridge: Project Primer');
-        blocks.push(`Workspace: ${workspaceFolder.name}`);
-        blocks.push(`Sync Time: ${new Date().toISOString()}`);
-        blocks.push('');
-
-        if (composition.intent) {
-            blocks.push('## User Intent');
-            blocks.push(composition.intent);
-            blocks.push('');
-        }
-        
-
-        // Project Description
-        const projectDescription = this.getProjectDescription(keyFiles, rootPath);
-        if (projectDescription) {
-            blocks.push(
-                `## Project Description${projectDescription.isInferred ? ' (Inferred)' : ''}`
-            );
-            blocks.push(projectDescription.text);
-            blocks.push('');
-        }
-
-        blocks.push('## Project Structure');
-        blocks.push('```');
-        blocks.push(projectStructure);
-        blocks.push('```');
-        blocks.push('');
-
-        if (keyFiles.length > 0) {
-            blocks.push('## Key Files');
-            for (const file of keyFiles) {
-                blocks.push(`### ${file.name}`);
-                blocks.push(`Path: ${file.relativePath}`);
-                if (file.preview) {
-                    blocks.push('```');
-                    blocks.push(file.preview);
-                    blocks.push('```');
-                }
-                blocks.push('');
-            }
-        }
-
-        if (activeFile) {
-            blocks.push('## Active File');
-            blocks.push(`Path: ${activeFile.path}`);
-            blocks.push(`Language: ${activeFile.language}`);
-            blocks.push('');
-        }
-
-        return blocks.join('\n');
+    // Project Description
+    const projectDescription = this.getProjectDescription(keyFiles, rootPath);
+    if (projectDescription) {
+      blocks.push(
+        `## Project Description${
+          projectDescription.isInferred ? " (Inferred)" : ""
+        }`
+      );
+      blocks.push(projectDescription.text);
+      blocks.push("");
     }
 
-    /**
-     * Compile incremental update (subsequent syncs)
-     */
-    private async compileIncrementalUpdate(
-        workspaceFolder: vscode.WorkspaceFolder,
-        savedState: SyncState,
-        composition: { intent: string | null }
-    ): Promise<string> {
-    
-        const rootPath = workspaceFolder.uri.fsPath;
-        const currentFileStates = await this.buildFileStates(rootPath);
-        const changes = this.detectChanges(savedState.fileStates, currentFileStates, rootPath);
+    blocks.push("## Project Structure");
+    blocks.push("```");
+    blocks.push(projectStructure);
+    blocks.push("```");
+    blocks.push("");
 
-        // Update saved state
-        this.workspaceState.update(this.stateKey, {
-            lastSyncTime: Date.now(),
-            fileStates: currentFileStates
-        } as SyncState);
-
-        const blocks: string[] = [];
-
-        blocks.push('# ContextBridge: Incremental Update');
-        blocks.push(`Workspace: ${workspaceFolder.name}`);
-        blocks.push(`Sync Time: ${new Date().toISOString()}`);
-        blocks.push(`Last Sync: ${new Date(savedState.lastSyncTime).toISOString()}`);
-        blocks.push('');
-
-        if (composition.intent) {
-            blocks.push('## User Intent');
-            blocks.push(composition.intent);
-            blocks.push('');
+    if (keyFiles.length > 0) {
+      blocks.push("## Key Files");
+      for (const file of keyFiles) {
+        blocks.push(`### ${file.name}`);
+        blocks.push(`Path: ${file.relativePath}`);
+        if (file.preview) {
+          blocks.push("```");
+          blocks.push(file.preview);
+          blocks.push("```");
         }
-        
-
-        if (changes.modified.length === 0 && changes.added.length === 0) {
-            blocks.push('No changes detected since last sync.');
-            blocks.push('');
-        } else {
-            if (changes.modified.length > 0) {
-                blocks.push('## Modified Files');
-                for (const filePath of changes.modified) {
-                    const relativePath = path.relative(rootPath, filePath);
-                    blocks.push(`- ${relativePath}`);
-                }
-                blocks.push('');
-            }
-
-            if (changes.added.length > 0) {
-                blocks.push('## New Files');
-                for (const filePath of changes.added) {
-                    const relativePath = path.relative(rootPath, filePath);
-                    blocks.push(`- ${relativePath}`);
-                }
-                blocks.push('');
-            }
-
-            if (changes.removed.length > 0) {
-                blocks.push('## Removed Files');
-                for (const filePath of changes.removed) {
-                    const relativePath = path.relative(rootPath, filePath);
-                    blocks.push(`- ${relativePath}`);
-                }
-                blocks.push('');
-            }
-        }
-
-        const activeFile = this.getActiveFileInfo();
-        if (activeFile) {
-            blocks.push('## Active File');
-            blocks.push(`Path: ${activeFile.path}`);
-            blocks.push(`Language: ${activeFile.language}`);
-            blocks.push('');
-        }
-
-        return blocks.join('\n');
+        blocks.push("");
+      }
     }
 
-    /**
-     * Compile deep sync (full file content)
-     */
-    private compileDeepSync(
-        filePath: string,
-        content: string,
-        diagnostics: vscode.Diagnostic[]
-    ): string {
-        const blocks: string[] = [];
+    if (activeFile) {
+      blocks.push("## Active File");
+      blocks.push(`Path: ${activeFile.path}`);
+      blocks.push(`Language: ${activeFile.language}`);
+      blocks.push("");
+    }
 
-        blocks.push('# ContextBridge: Deep Sync');
-        blocks.push(`File: ${filePath}`);
-        blocks.push(`Sync Time: ${new Date().toISOString()}`);
-        blocks.push('');
+    return blocks.join("\n");
+  }
 
-        if (diagnostics.length > 0) {
-            blocks.push('## Diagnostics');
-            for (const diag of diagnostics) {
-                const severityLabel = this.getDiagnosticSeverityLabel(diag.severity);
-                blocks.push(`- [${severityLabel}] ${diag.message} (Line ${diag.range.start.line + 1})`);
-            }
-            blocks.push('');
+  /**
+   * Compile incremental update (subsequent syncs)
+   */
+  private async compileIncrementalUpdate(
+    workspaceFolder: vscode.WorkspaceFolder,
+    savedState: SyncState,
+    composition: ContextComposition
+  ): Promise<string> {
+    const rootPath = workspaceFolder.uri.fsPath;
+
+    const currentFileStates = await this.buildFileStates(rootPath);
+    const changes = this.detectChanges(
+      savedState.fileStates,
+      currentFileStates,
+      rootPath
+    );
+
+    // Update saved state
+    this.workspaceState.update(this.stateKey, {
+      lastSyncTime: Date.now(),
+      fileStates: currentFileStates,
+    } as SyncState);
+
+    const blocks: string[] = [];
+
+    blocks.push("# ContextBridge: Incremental Update");
+    blocks.push(`Workspace: ${workspaceFolder.name}`);
+    blocks.push(`Sync Time: ${new Date().toISOString()}`);
+    blocks.push(
+      `Last Sync: ${new Date(savedState.lastSyncTime).toISOString()}`
+    );
+    blocks.push("");
+
+    /* ───────────── User Intent ───────────── */
+    if (composition.intent) {
+      blocks.push("## User Intent");
+      blocks.push(composition.intent);
+      blocks.push("");
+    }
+
+    /* ───────────── Repo Structure (optional) ───────────── */
+    if (composition.include.repoStructure) {
+      const projectStructure = this.getProjectStructure(rootPath);
+
+      blocks.push("## Project Structure");
+      blocks.push("```");
+      blocks.push(projectStructure);
+      blocks.push("```");
+      blocks.push("");
+    }
+
+    /* ───────────── Context Delta (optional) ───────────── */
+    if (composition.include.contextDelta) {
+      if (
+        changes.modified.length === 0 &&
+        changes.added.length === 0 &&
+        changes.removed.length === 0
+      ) {
+        blocks.push("No changes detected since last sync.");
+        blocks.push("");
+      } else {
+        if (changes.modified.length > 0) {
+          blocks.push("## Modified Files");
+          for (const filePath of changes.modified) {
+            blocks.push(`- ${path.relative(rootPath, filePath)}`);
+          }
+          blocks.push("");
         }
 
-        blocks.push('## File Content');
-        blocks.push('```');
-        blocks.push(content);
-        blocks.push('```');
-
-        return blocks.join('\n');
-    }
-
-    /**
-     * Get project structure as a directory tree
-     */
-    private getProjectStructure(rootPath: string, maxDepth: number = 3): string {
-        const ignorePatterns = [
-            'node_modules',
-            '.git',
-            '.vscode',
-            'out',
-            'dist',
-            'build',
-            '.next',
-            '.cache'
-        ];
-
-        const lines: string[] = [];
-        
-        const walk = (dir: string, prefix: string, depth: number): void => {
-            if (depth > maxDepth) return;
-
-            try {
-                const entries = fs.readdirSync(dir, { withFileTypes: true })
-                    .filter(entry => !ignorePatterns.includes(entry.name))
-                    .filter(entry => !entry.name.startsWith('.'))
-                    .slice(0, 20); // Limit entries per directory
-
-                for (let i = 0; i < entries.length; i++) {
-                    const entry = entries[i];
-                    const isLast = i === entries.length - 1;
-                    const currentPrefix = isLast ? '└── ' : '├── ';
-                    const nextPrefix = isLast ? '    ' : '│   ';
-
-                    lines.push(prefix + currentPrefix + entry.name);
-
-                    if (entry.isDirectory()) {
-                        const fullPath = path.join(dir, entry.name);
-                        walk(fullPath, prefix + nextPrefix, depth + 1);
-                    }
-                }
-            } catch (error) {
-                // Skip directories we can't read
-            }
-        };
-
-        const rootName = path.basename(rootPath);
-        lines.push(rootName);
-        walk(rootPath, '', 0);
-
-        return lines.join('\n');
-    }
-
-    /**
-     * Get key files (package.json, README, etc.)
-     */
-    private getKeyFiles(rootPath: string): Array<{ name: string; relativePath: string; preview?: string }> {
-        const keyFileNames = [
-            'package.json',
-            'README.md',
-            'README.txt',
-            'tsconfig.json',
-            'package-lock.json',
-            'yarn.lock',
-            'Cargo.toml',
-            'go.mod',
-            'requirements.txt',
-            'Pipfile'
-        ];
-
-        const files: Array<{ name: string; relativePath: string; preview?: string }> = [];
-
-        for (const fileName of keyFileNames) {
-            const filePath = path.join(rootPath, fileName);
-            if (fs.existsSync(filePath)) {
-                try {
-                    const content = fs.readFileSync(filePath, 'utf-8');
-                    // Preview first 20 lines
-                    const preview = content.split('\n').slice(0, 20).join('\n');
-                    files.push({
-                        name: fileName,
-                        relativePath: fileName,
-                        preview
-                    });
-                } catch (error) {
-                    files.push({
-                        name: fileName,
-                        relativePath: fileName
-                    });
-                }
-            }
+        if (changes.added.length > 0) {
+          blocks.push("## New Files");
+          for (const filePath of changes.added) {
+            blocks.push(`- ${path.relative(rootPath, filePath)}`);
+          }
+          blocks.push("");
         }
 
-        return files;
-    }
-
-    /**
-     * Get active file info
-     */
-    private getActiveFileInfo(): { path: string; language: string } | null {
-        const editor = vscode.window.activeTextEditor;
-        if (!editor) {
-            return null;
+        if (changes.removed.length > 0) {
+          blocks.push("## Removed Files");
+          for (const filePath of changes.removed) {
+            blocks.push(`- ${path.relative(rootPath, filePath)}`);
+          }
+          blocks.push("");
         }
-
-        return {
-            path: editor.document.fileName,
-            language: editor.document.languageId
-        };
+      }
     }
 
-    /**
-     * Build file states map for change detection
-     */
-    private async buildFileStates(rootPath: string): Promise<{ [filePath: string]: FileState }> {
-        const fileStates: { [filePath: string]: FileState } = {};
-        const ignorePatterns = [
-            'node_modules',
-            '.git',
-            '.vscode',
-            'out',
-            'dist',
-            'build',
-            '.next',
-            '.cache'
-        ];
-
-        const walk = (dir: string): void => {
-            try {
-                const entries = fs.readdirSync(dir, { withFileTypes: true });
-
-                for (const entry of entries) {
-                    if (ignorePatterns.includes(entry.name) || entry.name.startsWith('.')) {
-                        continue;
-                    }
-
-                    const fullPath = path.join(dir, entry.name);
-
-                    if (entry.isDirectory()) {
-                        walk(fullPath);
-                    } else if (entry.isFile()) {
-                        try {
-                            const stats = fs.statSync(fullPath);
-                            fileStates[fullPath] = {
-                                mtime: stats.mtimeMs,
-                                size: stats.size
-                            };
-                        } catch (error) {
-                            // Skip files we can't stat
-                        }
-                    }
-                }
-            } catch (error) {
-                // Skip directories we can't read
-            }
-        };
-
-        walk(rootPath);
-        return fileStates;
+    /* ───────────── Active File (optional) ───────────── */
+    if (composition.include.activeFile) {
+      const activeFile = this.getActiveFileInfo();
+      if (activeFile) {
+        blocks.push("## Active File");
+        blocks.push(`Path: ${activeFile.path}`);
+        blocks.push(`Language: ${activeFile.language}`);
+        blocks.push("");
+      }
     }
 
-    /**
-     * Detect changes between saved state and current state
-     */
-    private detectChanges(
-        savedStates: { [filePath: string]: FileState },
-        currentStates: { [filePath: string]: FileState },
-        rootPath: string
-    ): { modified: string[]; added: string[]; removed: string[] } {
-        const modified: string[] = [];
-        const added: string[] = [];
-        const removed: string[] = [];
-
-        // Check for modified and new files
-        for (const filePath in currentStates) {
-            const saved = savedStates[filePath];
-            const current = currentStates[filePath];
-
-            if (!saved) {
-                added.push(filePath);
-            } else if (saved.mtime !== current.mtime || saved.size !== current.size) {
-                modified.push(filePath);
-            }
-        }
-
-        // Check for removed files
-        for (const filePath in savedStates) {
-            if (!currentStates[filePath]) {
-                removed.push(filePath);
-            }
-        }
-
-        return { modified, added, removed };
-    }
-
-    /**
-    * Get project description from README or infer from filesystem
-    */
-    private getProjectDescription(
-        keyFiles: Array<{ name: string; relativePath: string; preview?: string }>,
-        rootPath: string
-    ): { text: string; isInferred: boolean } | null {
-        // Try to extract from README first
-        const readmeFile = keyFiles.find(file =>
-            file.name === 'README.md' || file.name === 'README.txt'
+    /* ───────────── Diagnostics (optional) ───────────── */
+    if (composition.include.diagnostics) {
+      const editor = vscode.window.activeTextEditor;
+      if (editor) {
+        const diagnostics = vscode.languages.getDiagnostics(
+          editor.document.uri
         );
 
-        if (readmeFile && readmeFile.preview) {
-            const lines = readmeFile.preview.split('\n');
-            for (const line of lines) {
-                const trimmed = line.trim();
-                if (
-                    trimmed &&
-                    !trimmed.startsWith('#') &&
-                    trimmed.length > 10 &&
-                    !this.isBoilerplateDescription(trimmed)
-                ) {
-                    return { text: trimmed, isInferred: false };
-                }
+        if (diagnostics.length > 0) {
+          const contentLines = editor.document.getText().split("\n");
+
+          blocks.push("## Diagnostics");
+
+          for (const diag of diagnostics) {
+            const severity = this.getDiagnosticSeverityLabel(diag.severity);
+
+            const line = diag.range.start.line;
+            const startCol = diag.range.start.character;
+            const endCol = diag.range.end.character;
+
+            const lineText = contentLines[line] ?? "";
+            const snippet = lineText.slice(startCol, endCol).trim();
+
+            blocks.push(
+              `- [${severity}] ${diag.message}\n` +
+                `  → Line ${line + 1}, Col ${startCol + 1}-${endCol + 1}` +
+                (snippet ? `\n  → Code: "${snippet}"` : "")
+            );
+          }
+
+          blocks.push("");
+        }
+      }
+    }
+
+    /* ───────────── Key Config Files (optional) ───────────── */
+    if (composition.include.keyFiles) {
+      const keyFiles = this.getKeyFiles(rootPath);
+
+      if (keyFiles.length > 0) {
+        blocks.push("## Key Configuration Files");
+
+        for (const file of keyFiles) {
+          blocks.push(`### ${file.name}`);
+          blocks.push(`Path: ${file.relativePath}`);
+
+          if (file.preview) {
+            blocks.push("```");
+            blocks.push(file.preview);
+            blocks.push("```");
+          }
+
+          blocks.push("");
+        }
+      }
+    }
+
+    /* ───────────── Execution Context (Task / Terminal) ───────────── */
+    if (composition.include.terminal) {
+      const execSummary = this.getExecutionContextSummary();
+      if (execSummary) {
+        blocks.push(execSummary);
+        blocks.push("");
+      }
+    }
+
+    return blocks.join("\n");
+  }
+
+  /**
+   * Compile deep sync (full file content)
+   */
+  private compileDeepSync(
+    filePath: string,
+    content: string,
+    diagnostics: vscode.Diagnostic[]
+  ): string {
+    const blocks: string[] = [];
+
+    blocks.push("# ContextBridge: Deep Sync");
+    blocks.push(`File: ${filePath}`);
+    blocks.push(`Sync Time: ${new Date().toISOString()}`);
+    blocks.push("");
+
+    if (diagnostics.length > 0) {
+      blocks.push("## Diagnostics");
+      for (const diag of diagnostics) {
+        const severityLabel = this.getDiagnosticSeverityLabel(diag.severity);
+        blocks.push(
+          `- [${severityLabel}] ${diag.message} (Line ${
+            diag.range.start.line + 1
+          })`
+        );
+      }
+      blocks.push("");
+    }
+
+    blocks.push("## File Content");
+    blocks.push("```");
+    blocks.push(content);
+    blocks.push("```");
+
+    return blocks.join("\n");
+  }
+
+  /**
+   * Get project structure as a directory tree
+   */
+  private getProjectStructure(rootPath: string, maxDepth: number = 3): string {
+    const ignorePatterns = [
+      "node_modules",
+      ".git",
+      ".vscode",
+      "out",
+      "dist",
+      "build",
+      ".next",
+      ".cache",
+    ];
+
+    const lines: string[] = [];
+
+    const walk = (dir: string, prefix: string, depth: number): void => {
+      if (depth > maxDepth) return;
+
+      try {
+        const entries = fs
+          .readdirSync(dir, { withFileTypes: true })
+          .filter((entry) => !ignorePatterns.includes(entry.name))
+          .filter((entry) => !entry.name.startsWith("."))
+          .slice(0, 20); // Limit entries per directory
+
+        for (let i = 0; i < entries.length; i++) {
+          const entry = entries[i];
+          const isLast = i === entries.length - 1;
+          const currentPrefix = isLast ? "└── " : "├── ";
+          const nextPrefix = isLast ? "    " : "│   ";
+
+          lines.push(prefix + currentPrefix + entry.name);
+
+          if (entry.isDirectory()) {
+            const fullPath = path.join(dir, entry.name);
+            walk(fullPath, prefix + nextPrefix, depth + 1);
+          }
+        }
+      } catch (error) {
+        // Skip directories we can't read
+      }
+    };
+
+    const rootName = path.basename(rootPath);
+    lines.push(rootName);
+    walk(rootPath, "", 0);
+
+    return lines.join("\n");
+  }
+
+  /**
+   * Get key files (package.json, README, etc.)
+   */
+  private getKeyFiles(
+    rootPath: string
+  ): Array<{ name: string; relativePath: string; preview?: string }> {
+    const keyFileNames = [
+      "package.json",
+      "README.md",
+      "README.txt",
+      "tsconfig.json",
+      "package-lock.json",
+      "yarn.lock",
+      "Cargo.toml",
+      "go.mod",
+      "requirements.txt",
+      "Pipfile",
+    ];
+
+    const files: Array<{
+      name: string;
+      relativePath: string;
+      preview?: string;
+    }> = [];
+
+    for (const fileName of keyFileNames) {
+      const filePath = path.join(rootPath, fileName);
+      if (fs.existsSync(filePath)) {
+        try {
+          const content = fs.readFileSync(filePath, "utf-8");
+          // Preview first 20 lines
+          const preview = content.split("\n").slice(0, 20).join("\n");
+          files.push({
+            name: fileName,
+            relativePath: fileName,
+            preview,
+          });
+        } catch (error) {
+          files.push({
+            name: fileName,
+            relativePath: fileName,
+          });
+        }
+      }
+    }
+
+    return files;
+  }
+
+  /**
+   * Get active file info
+   */
+  private getActiveFileInfo(): { path: string; language: string } | null {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      return null;
+    }
+
+    return {
+      path: editor.document.fileName,
+      language: editor.document.languageId,
+    };
+  }
+
+  /**
+   * Build file states map for change detection
+   */
+  private async buildFileStates(
+    rootPath: string
+  ): Promise<{ [filePath: string]: FileState }> {
+    const fileStates: { [filePath: string]: FileState } = {};
+    const ignorePatterns = [
+      "node_modules",
+      ".git",
+      ".vscode",
+      "out",
+      "dist",
+      "build",
+      ".next",
+      ".cache",
+    ];
+
+    const walk = (dir: string): void => {
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+
+        for (const entry of entries) {
+          if (
+            ignorePatterns.includes(entry.name) ||
+            entry.name.startsWith(".")
+          ) {
+            continue;
+          }
+
+          const fullPath = path.join(dir, entry.name);
+
+          if (entry.isDirectory()) {
+            walk(fullPath);
+          } else if (entry.isFile()) {
+            try {
+              const stats = fs.statSync(fullPath);
+              fileStates[fullPath] = {
+                mtime: stats.mtimeMs,
+                size: stats.size,
+              };
+            } catch (error) {
+              // Skip files we can't stat
             }
+          }
         }
+      } catch (error) {
+        // Skip directories we can't read
+      }
+    };
 
-        // Infer from filesystem indicators
-        const inferredDescription = this.inferProjectDescription(rootPath);
-        if (inferredDescription) {
-            return { text: inferredDescription, isInferred: true };
-        }
+    walk(rootPath);
+    return fileStates;
+  }
 
-        return null;
+  /**
+   * Detect changes between saved state and current state
+   */
+  private detectChanges(
+    savedStates: { [filePath: string]: FileState },
+    currentStates: { [filePath: string]: FileState },
+    rootPath: string
+  ): { modified: string[]; added: string[]; removed: string[] } {
+    const modified: string[] = [];
+    const added: string[] = [];
+    const removed: string[] = [];
+
+    // Check for modified and new files
+    for (const filePath in currentStates) {
+      const saved = savedStates[filePath];
+      const current = currentStates[filePath];
+
+      if (!saved) {
+        added.push(filePath);
+      } else if (saved.mtime !== current.mtime || saved.size !== current.size) {
+        modified.push(filePath);
+      }
     }
 
-
-    /**
- * Detect low-signal / boilerplate README descriptions
- */
-    private isBoilerplateDescription(text: string): boolean {
-        const boilerplatePatterns = [
-            'this template provides',
-            'react + vite',
-            'minimal setup',
-            'starter template',
-            'boilerplate',
-            'getting started',
-            'create-react-app',
-            'vite + react'
-        ];
-
-        const lower = text.toLowerCase();
-        return boilerplatePatterns.some(pattern => lower.includes(pattern));
+    // Check for removed files
+    for (const filePath in savedStates) {
+      if (!currentStates[filePath]) {
+        removed.push(filePath);
+      }
     }
 
+    return { modified, added, removed };
+  }
 
-    /**
-     * Infer project description from filesystem structure
-     */
-    private inferProjectDescription(rootPath: string): string | null {
-        const indicators: string[] = [];
+  /**
+   * Get project description from README or infer from filesystem
+   */
+  private getProjectDescription(
+    keyFiles: Array<{ name: string; relativePath: string; preview?: string }>,
+    rootPath: string
+  ): { text: string; isInferred: boolean } | null {
+    // Try to extract from README first
+    const readmeFile = keyFiles.find(
+      (file) => file.name === "README.md" || file.name === "README.txt"
+    );
 
-        // Check for common framework/directory patterns
-        if (fs.existsSync(path.join(rootPath, 'src', 'app'))) {
-            indicators.push('Next.js application');
-        } else if (fs.existsSync(path.join(rootPath, 'src', 'pages'))) {
-            indicators.push('Next.js application');
-        } else if (fs.existsSync(path.join(rootPath, 'app'))) {
-            indicators.push('application');
+    if (readmeFile && readmeFile.preview) {
+      const lines = readmeFile.preview.split("\n");
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (
+          trimmed &&
+          !trimmed.startsWith("#") &&
+          trimmed.length > 10 &&
+          !this.isBoilerplateDescription(trimmed)
+        ) {
+          return { text: trimmed, isInferred: false };
         }
-
-        if (fs.existsSync(path.join(rootPath, 'prisma'))) {
-            indicators.push('database integration');
-        }
-
-        if (fs.existsSync(path.join(rootPath, 'src', 'components'))) {
-            indicators.push('component-based architecture');
-        }
-
-        if (fs.existsSync(path.join(rootPath, 'src', 'api'))) {
-            indicators.push('API endpoints');
-        }
-
-        if (indicators.length > 0) {
-            return `This project appears to be a ${indicators.join(' with ')}.`;
-        }
-
-        return null;
+      }
     }
 
-    /**
-     * Convert diagnostic severity number to human-readable label
-     */
-    private getDiagnosticSeverityLabel(severity: vscode.DiagnosticSeverity): string {
-        switch (severity) {
-            case vscode.DiagnosticSeverity.Error:
-                return 'Error';
-            case vscode.DiagnosticSeverity.Warning:
-                return 'Warning';
-            case vscode.DiagnosticSeverity.Information:
-                return 'Info';
-            case vscode.DiagnosticSeverity.Hint:
-                return 'Hint';
-            default:
-                return 'Unknown';
-        }
+    // Infer from filesystem indicators
+    const inferredDescription = this.inferProjectDescription(rootPath);
+    if (inferredDescription) {
+      return { text: inferredDescription, isInferred: true };
     }
+
+    return null;
+  }
+
+  /**
+   * Detect low-signal / boilerplate README descriptions
+   */
+  private isBoilerplateDescription(text: string): boolean {
+    const boilerplatePatterns = [
+      "this template provides",
+      "react + vite",
+      "minimal setup",
+      "starter template",
+      "boilerplate",
+      "getting started",
+      "create-react-app",
+      "vite + react",
+    ];
+
+    const lower = text.toLowerCase();
+    return boilerplatePatterns.some((pattern) => lower.includes(pattern));
+  }
+
+  /**
+   * Infer project description from filesystem structure
+   */
+  private inferProjectDescription(rootPath: string): string | null {
+    const indicators: string[] = [];
+
+    // Check for common framework/directory patterns
+    if (fs.existsSync(path.join(rootPath, "src", "app"))) {
+      indicators.push("Next.js application");
+    } else if (fs.existsSync(path.join(rootPath, "src", "pages"))) {
+      indicators.push("Next.js application");
+    } else if (fs.existsSync(path.join(rootPath, "app"))) {
+      indicators.push("application");
+    }
+
+    if (fs.existsSync(path.join(rootPath, "prisma"))) {
+      indicators.push("database integration");
+    }
+
+    if (fs.existsSync(path.join(rootPath, "src", "components"))) {
+      indicators.push("component-based architecture");
+    }
+
+    if (fs.existsSync(path.join(rootPath, "src", "api"))) {
+      indicators.push("API endpoints");
+    }
+
+    if (indicators.length > 0) {
+      return `This project appears to be a ${indicators.join(" with ")}.`;
+    }
+
+    return null;
+  }
+
+  /**
+   * Convert diagnostic severity number to human-readable label
+   */
+  private getDiagnosticSeverityLabel(
+    severity: vscode.DiagnosticSeverity
+  ): string {
+    switch (severity) {
+      case vscode.DiagnosticSeverity.Error:
+        return "Error";
+      case vscode.DiagnosticSeverity.Warning:
+        return "Warning";
+      case vscode.DiagnosticSeverity.Information:
+        return "Info";
+      case vscode.DiagnosticSeverity.Hint:
+        return "Hint";
+      default:
+        return "Unknown";
+    }
+  }
+
+  private getLastTaskSummary(): string | null {
+    const task = this.workspaceState.get<{
+      label: string;
+      exitCode?: number;
+      timestamp: number;
+    }>("contextbridge.lastTask");
+
+    if (!task) return null;
+
+    return `Task: ${task.label}\nExit Code: ${
+      task.exitCode ?? "unknown"
+    }\nTimestamp: ${new Date(task.timestamp).toISOString()}`;
+  }
+
+  private getExecutionContextSummary(): string | null {
+    const task = this.workspaceState.get<{
+      label: string;
+      exitCode?: number;
+      timestamp: number;
+    }>("contextbridge.lastTask");
+
+    const terminal = this.workspaceState.get<{
+      timestamp: number;
+    }>("contextbridge.terminalActivity");
+
+    if (!task && !terminal) return null;
+
+    // Prefer newer source
+    if (terminal && (!task || terminal.timestamp > task.timestamp)) {
+        return (
+            "## Terminal Activity\n" +
+            "Recent manual terminal execution detected.\n" +
+            "Note: Output is not directly accessible to extensions.\n" +
+            "Tip: To include detailed output, run commands as VS Code Tasks."
+        );        
+    }
+
+    if (task) {
+      return (
+        "## Last Task Execution\n" +
+        `Task: ${task.label}\n` +
+        `Exit Code: ${task.exitCode ?? "unknown"}`
+      );
+    }
+
+    return null;
+  }
 }
-

@@ -2,7 +2,7 @@
     "name": "contextbridge",
     "displayName": "ContextBridge",
     "description": "Deterministic context synchronization between IDE and browser-based LLMs",
-    "version": "0.1.2",
+    "version": "0.2.1",
     "icon": "assets/icon.png",
     "engines": {
         "vscode": "^1.75.0"

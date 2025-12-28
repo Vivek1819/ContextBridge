@@ -15,9 +15,27 @@ type ContextComposition = {
   };
   
 
+
 export function activate(context: vscode.ExtensionContext) {
     const contextBridge = new ContextBridge(context.workspaceState);
 
+    // 🔹 Listen to completed VS Code tasks (npm run dev, build, test, etc.)
+    vscode.tasks.onDidEndTaskProcess((e) => {
+        context.workspaceState.update('contextbridge.lastTask', {
+            label: e.execution.task.name,
+            exitCode: e.exitCode,
+            timestamp: Date.now()
+        });
+    });
+    
+    vscode.window.onDidChangeActiveTerminal(() => {
+        context.workspaceState.update('contextbridge.terminalActivity', {
+            active: true,
+            timestamp: Date.now()
+        });
+    });
+
+    
     // Register "Sync Repo → Chat" command
     const syncRepoCommand = vscode.commands.registerCommand(
         'contextbridge.syncRepo',
