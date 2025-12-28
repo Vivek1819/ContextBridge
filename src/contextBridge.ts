@@ -31,14 +31,20 @@ export class ContextBridge {
      * First sync: project primer
      * Subsequent syncs: incremental updates
      */
-    async syncRepo(workspaceFolder: vscode.WorkspaceFolder): Promise<string> {
+    async syncRepo(
+        workspaceFolder: vscode.WorkspaceFolder,
+        composition: {
+            intent: string | null;
+            include: Record<string, boolean>;
+        }
+    ): Promise<string> {
         const savedState = this.workspaceState.get<SyncState>(this.stateKey);
         const isFirstSync = !savedState;
 
         if (isFirstSync) {
-            return this.compileProjectPrimer(workspaceFolder);
+            return this.compileProjectPrimer(workspaceFolder, composition);
         } else {
-            return this.compileIncrementalUpdate(workspaceFolder, savedState);
+            return this.compileIncrementalUpdate(workspaceFolder, savedState, composition);
         }
     }
 
@@ -58,7 +64,11 @@ export class ContextBridge {
     /**
      * Compile project primer (first sync)
      */
-    private async compileProjectPrimer(workspaceFolder: vscode.WorkspaceFolder): Promise<string> {
+    private async compileProjectPrimer(
+        workspaceFolder: vscode.WorkspaceFolder,
+        composition: { intent: string | null }
+    ): Promise<string> {
+        
         const rootPath = workspaceFolder.uri.fsPath;
         const projectStructure = this.getProjectStructure(rootPath);
         const keyFiles = this.getKeyFiles(rootPath);
@@ -77,6 +87,13 @@ export class ContextBridge {
         blocks.push(`Workspace: ${workspaceFolder.name}`);
         blocks.push(`Sync Time: ${new Date().toISOString()}`);
         blocks.push('');
+
+        if (composition.intent) {
+            blocks.push('## User Intent');
+            blocks.push(composition.intent);
+            blocks.push('');
+        }
+        
 
         // Project Description
         const projectDescription = this.getProjectDescription(keyFiles, rootPath);
@@ -123,8 +140,10 @@ export class ContextBridge {
      */
     private async compileIncrementalUpdate(
         workspaceFolder: vscode.WorkspaceFolder,
-        savedState: SyncState
+        savedState: SyncState,
+        composition: { intent: string | null }
     ): Promise<string> {
+    
         const rootPath = workspaceFolder.uri.fsPath;
         const currentFileStates = await this.buildFileStates(rootPath);
         const changes = this.detectChanges(savedState.fileStates, currentFileStates, rootPath);
@@ -142,6 +161,13 @@ export class ContextBridge {
         blocks.push(`Sync Time: ${new Date().toISOString()}`);
         blocks.push(`Last Sync: ${new Date(savedState.lastSyncTime).toISOString()}`);
         blocks.push('');
+
+        if (composition.intent) {
+            blocks.push('## User Intent');
+            blocks.push(composition.intent);
+            blocks.push('');
+        }
+        
 
         if (changes.modified.length === 0 && changes.added.length === 0) {
             blocks.push('No changes detected since last sync.');
