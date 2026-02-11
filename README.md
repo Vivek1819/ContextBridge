@@ -10,6 +10,8 @@ but implement and debug code inside an IDE.
 ## Status
 MVP (actively evolving).
 
+Try ContextBridge at: https://marketplace.visualstudio.com/items?itemName=vivek-hipparkar.contextbridge
+
 ## How to Use
 
 ContextBridge exposes two explicit actions:
